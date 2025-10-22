@@ -1,0 +1,116 @@
+#define M_PI radians(180.0)
+#define UV float2(fragCoord.xy / uv_size)
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 uv_size;
+
+sampler_state textureSampler {
+    Filter    = Linear;
+    AddressU  = Border;
+    AddressV  = Border;
+    BorderColor = 00000000;
+};
+
+uniform texture2d pixelImage = "phosphor.png";
+
+sampler_state pixelSampler {
+  Filter    = Linear;
+  AddressU  = Wrap;
+  AddressV  = Wrap;
+};
+
+uniform float pixelWidth<
+  float minimum = 1.0;
+  float maximum = 128.0;
+  float step = 1.0;
+> = 16.0;
+uniform float pixelHeight<
+  float minimum = 1.0;
+  float maximum = 128.0;
+  float step = 1.0;
+> = 16.0;
+uniform float pincushion = 0.2;
+uniform float scanlineContrast = 0.25;
+uniform float scanlineBrightness = 1.0;
+
+float2 barrelDistort(float2 v) {
+  const float kStretchRatio = 0.9;
+
+  float2 uv = (v - float2(0.5, 0.5)) / kStretchRatio;
+  float uva = atan2(uv.x, uv.y);
+  float uvd = sqrt(dot(uv, uv));
+  // k = negative for pincushion, positive for barrel
+  float k = pincushion;
+  uvd = uvd * (1.0 + k * uvd * uvd);
+  return float2(0.5, 0.5) + float2(sin(uva), cos(uva)) * uvd;
+}
+
+float4 pixelate(float4 inputColor, float2 texCoord, float2 inputTexelSize,
+                float2 inputTextureSize) {
+  const float2 pixelImageSize = float2(pixelWidth, pixelHeight);
+  const float2 pixelTexelSize = 1.0 / pixelImageSize;
+
+  const float columnNumber = texCoord.x / inputTexelSize.x;
+  const bool isOddColumn = (floor(columnNumber % 2.0) > 0.0);
+
+  float2 modifiedTexCoord = texCoord * inputTextureSize;
+  if (isOddColumn) {
+    modifiedTexCoord.y += 0.5;
+  }
+
+  return inputColor * pixelImage.Sample(pixelSampler, modifiedTexCoord);
+}
+
+float scanlineValue(float2 texCoord, float2 inputTexelSize) {
+  return clamp(sin(texCoord.y / inputTexelSize.y * M_PI) * scanlineContrast +
+                   scanlineBrightness,
+               0, 1.0);
+}
+
+float4 sample(float2 texCoord, float2 inputTexelSize, float2 inputTextureSize) {
+  float2 derezzedTexCoord = floor(texCoord * inputTextureSize) / inputTextureSize;
+  const float4 initialColor = image.Sample(textureSampler, derezzedTexCoord);
+  const float4 pixelatedColor =
+      pixelate(initialColor, texCoord, inputTexelSize, inputTextureSize);
+  const float3 pixelValue = scanlineValue(texCoord, inputTexelSize);
+  const float4 scanlineColor = pixelatedColor * float4(pixelValue, 1.0);
+
+  return scanlineColor;
+}
+
+void mainImage(out float4 fragColor, in float2 fragCoord) {
+  float2 inputTextureSize = uv_size / float2(pixelWidth, pixelHeight);
+  const float2 inputTexelSize = 1.0 / inputTextureSize;
+  const float2 fragUVSize = 1.0 / uv_size;
+  const float2 distortedFragTexCoord = barrelDistort(UV);
+
+  fragColor = sample(distortedFragTexCoord, inputTexelSize, inputTextureSize);
+}
+
+/*ps end*/
+
+struct VertFragData {
+  float4 pos : POSITION;
+  float2 uv  : TEXCOORD0;
+};
+
+VertFragData VSDefault(VertFragData vtx) {
+  vtx.pos = mul(float4(vtx.pos.xyz, 1.0), ViewProj);
+  return vtx;
+}
+
+float4 PSDefault(VertFragData vtx) : TARGET {
+  float4 col = float4(1., 1., 1., 1.);
+  mainImage(col, vtx.uv * uv_size);
+  return col;
+}
+
+technique Draw 
+{
+  pass
+  {
+    vertex_shader = VSDefault(vtx);
+    pixel_shader  = PSDefault(vtx); 
+  }
+}
